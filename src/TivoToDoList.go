@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -74,6 +75,9 @@ func (ep episodeDetails) String() string {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	nomail := flag.Bool("nomail", false, "do everything except sending the mail")
+	flag.Parse()
 
 	var err error
 	var configBuf []byte
@@ -186,9 +190,11 @@ func main() {
 
 	fmt.Printf("%s", msgBytes)
 
-	auth := smtp.PlainAuth("", config["smtp_user"].(string), config["smtp_password"].(string), config["smtp_host"].(string))
-	err = smtp.SendMail(config["smtp_server"].(string), auth, config["smtp_name"].(string), recipients, msgBytes)
-	if err != nil {
-		panic(err)
+	if !(*nomail) {
+		auth := smtp.PlainAuth("", config["smtp_user"].(string), config["smtp_password"].(string), config["smtp_host"].(string))
+		err = smtp.SendMail(config["smtp_server"].(string), auth, config["smtp_name"].(string), recipients, msgBytes)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
