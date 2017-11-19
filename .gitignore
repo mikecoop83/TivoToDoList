@@ -1,6 +1,8 @@
+bin/
 data/
 src/debug
 src/TivoToDoList
 src/toDoList.json
 **/*.conf
 .*/
+deploy.sh
