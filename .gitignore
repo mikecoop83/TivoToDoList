@@ -1,5 +1,6 @@
 data/
 src/debug
 src/TivoToDoList
-**/*.conf
 src/toDoList.json
+**/*.conf
+.*/

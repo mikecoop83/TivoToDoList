@@ -19,7 +19,7 @@ class EpisodeDetails:
         self.url = 'http://tvschedule.zap2it.com/tv/episode/' + ep.get('partnerCollectionId')
 
     def __repr__(self):
-        return "%s: <b><a href='%s'>%s</a></b> (<i>%s</i>) [%s]" % (self.requestedStartTime.time(), self.url, self.title, self.subtitle or self.description or "Unknown", self.requestedEndTime - self.requestedStartTime)
+        return "%s: <b>%s</b> (<i>%s</i>) [%s]" % (self.requestedStartTime.time(), self.title, self.subtitle or self.description or "Unknown", self.requestedEndTime - self.requestedStartTime)
 
 def sortKey(ep):
     return getLocalTime(ep.get('requestedStartTime'))

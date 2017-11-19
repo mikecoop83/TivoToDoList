@@ -25,11 +25,16 @@ type episodeDetails struct {
 	RequestedEndTime   time.Time
 }
 
-func toDate(dateTime time.Time) time.Time {
-	return time.Date(dateTime.Year(), dateTime.Month(), dateTime.Day(), 0, 0, 0, 0, dateTime.Location())
+func getDate(dateTime time.Time) time.Time {
+	return time.Date(
+		dateTime.Year(),
+		dateTime.Month(),
+		dateTime.Day(),
+		0, 0, 0, 0,
+		dateTime.Location())
 }
 
-func getLocalTime(utcTime string) time.Time {
+func parseUtcAsLocalTime(utcTime string) time.Time {
 	if utcTime == "" {
 		return time.Time{}
 	}
@@ -50,8 +55,8 @@ func newEpisodeDetails(episodeMap map[string]interface{}) episodeDetails {
 		Title:              title,
 		Subtitle:           subtitle,
 		Description:        description,
-		RequestedStartTime: getLocalTime(requestedStartTime),
-		RequestedEndTime:   getLocalTime(requestedEndTime),
+		RequestedStartTime: parseUtcAsLocalTime(requestedStartTime),
+		RequestedEndTime:   parseUtcAsLocalTime(requestedEndTime),
 	}
 	return ep
 }
@@ -91,7 +96,7 @@ func main() {
 	config := configParsed.(map[string]interface{})
 	var tivoJSON []byte
 	info, _ := os.Stat("toDoList.json")
-	if info != nil && toDate(info.ModTime()) == toDate(time.Now()) {
+	if info != nil && getDate(info.ModTime()) == getDate(time.Now()) {
 		if tivoJSON, err = ioutil.ReadFile("toDoList.json"); err != nil {
 			panic(err)
 		}
@@ -136,10 +141,10 @@ func main() {
 	log.Printf("Found %d new episodes", len(newEps))
 
 	var todaysNewEps, tomorrowsNewEps []episodeDetails
-	today := toDate(time.Now())
+	today := getDate(time.Now())
 	tomorrow := today.AddDate(0, 0, 1)
 	for _, ep := range newEps {
-		epDate := toDate(ep.RequestedStartTime)
+		epDate := getDate(ep.RequestedStartTime)
 		if epDate == today {
 			todaysNewEps = append(todaysNewEps, ep)
 		} else if epDate == tomorrow {
