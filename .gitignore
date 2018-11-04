@@ -6,3 +6,4 @@ src/toDoList.json
 **/*.conf
 .*/
 deploy.sh
+**/__pycache__/

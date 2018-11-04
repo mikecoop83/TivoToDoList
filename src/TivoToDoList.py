@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import sys
 import json
-import urllib
+import requests
 import smtplib
 from email.mime.text import MIMEText
 import os
@@ -9,81 +9,108 @@ import os
 from datetime import datetime
 from datetime import timedelta
 
-class EpisodeDetails:
-    def __init__(self, ep):
-        self.title = ep.get('title')
-        self.subtitle = ep.get('subtitle')
-        self.description = ep.get('description')
-        self.requestedStartTime = getLocalTime(ep.get('requestedStartTime'))
-        self.requestedEndTime = getLocalTime(ep.get('requestedEndTime'))
-        self.url = 'http://tvschedule.zap2it.com/tv/episode/' + ep.get('partnerCollectionId')
 
-    def __repr__(self):
-        return "%s: <b>%s</b> (<i>%s</i>) [%s]" % (self.requestedStartTime.time(), self.title, self.subtitle or self.description or "Unknown", self.requestedEndTime - self.requestedStartTime)
-
-def sortKey(ep):
-    return getLocalTime(ep.get('requestedStartTime'))
-
-def getLocalTime(strUtcTime):
-    if not strUtcTime:
+def get_local_time(str_utc_time):
+    if not str_utc_time:
         return None
-    result = datetime.strptime(strUtcTime, '%Y-%m-%d %H:%M:%S') - offset
+    result = datetime.strptime(str_utc_time, "%Y-%m-%d %H:%M:%S") - offset
     return result
 
-offset = timedelta(hours=round(float((datetime.utcnow() - datetime.now()).seconds) / 60 / 60, 0))
 
-with open('TivoToDoList.conf', 'r') as configFile:
-    config = json.loads(configFile.read())
+def sort_key(ep):
+    return get_local_time(ep.get("requested_start_time"))
 
-strTivoJson = ''
-if os.path.isfile('toDoList.json'):
-    fileSize = os.stat('toDoList.json').st_size
-    if fileSize > 0:
-        modTimeInSec = os.path.getmtime('toDoList.json')
-        modTime = datetime.fromtimestamp(modTimeInSec)
-        if "-f" in sys.argv or modTime.date() == datetime.now().date():
-            with open('toDoList.json', 'r') as tivoJsonFile:
-                strTivoJson = tivoJsonFile.read()
 
-if not strTivoJson:
-    strTivoJson = urllib.urlopen(config['kmttgBaseUrl'] + '/getToDo?tivo=Roamio').read()
+class EpisodeDetails:
+    def __init__(self, ep):
+        self.title = ep.get("title")
+        self.subtitle = ep.get("subtitle")
+        self.description = ep.get("description")
+        self.requested_start_time = get_local_time(ep.get("requestedStartTime"))
+        self.requested_end_time = get_local_time(ep.get("requestedEndTime"))
+        self.url = "http://tvschedule.zap2it.com/tv/episode/" + ep.get(
+            "partnerCollectionId"
+        )
 
-listTivo = json.loads(strTivoJson)
+    def __repr__(self):
+        return "%s: <b>%s</b> (<i>%s</i>) [%s]" % (
+            self.requested_start_time.time(),
+            self.title,
+            self.subtitle or self.description or "Unknown",
+            self.requested_end_time - self.requested_start_time,
+        )
 
-with open('toDoList.json', 'w') as tivoJsonFile:
-        tivoJsonFile.write(json.dumps(listTivo, sort_keys=True, indent=4, separators=(',', ': ')))
 
-newEps = [EpisodeDetails(ep) for ep in listTivo if ep['isNew']]
+if __name__ == "__main__":
+    offset = timedelta(
+        hours=round(float((datetime.utcnow() - datetime.now()).seconds) / 60 / 60, 0)
+    )
 
-todaysNewEps = [ep for ep in newEps if ep.requestedStartTime.date() == datetime.today().date()];
-tomorrowsNewEps = [ep for ep in newEps if ep.requestedStartTime.date() == datetime.today().date() + timedelta(days=1)];
+    with open("TivoToDoList.conf", "r") as configFile:
+        config = json.loads(configFile.read())
 
-todaysNewEps.sort(key=lambda ep: ep.requestedStartTime)
-tomorrowsNewEps.sort(key=lambda ep: ep.requestedStartTime)
+    str_tivo_json = ""
+    if os.path.isfile("toDoList.json"):
+        file_size = os.stat("toDoList.json").st_size
+        if file_size > 0:
+            mod_time_sec = os.path.getmtime("toDoList.json")
+            mod_time = datetime.fromtimestamp(mod_time_sec)
+            if "-f" in sys.argv or mod_time.date() == datetime.now().date():
+                with open("toDoList.json", "r") as tivo_json_file:
+                    str_tivo_json = tivo_json_file.read()
 
-message_str_list = []
+    if not str_tivo_json:
+        str_tivo_json = requests.get(
+            config["kmttgBaseUrl"] + "/getToDo?tivo=Roamio"
+        ).text
 
-message_str_list.append("Today's new episodes:")
-for epd in todaysNewEps:
-    message_str_list.append(str(epd))
+    list_tivo = json.loads(str_tivo_json)
 
-message_str_list.append("")
-message_str_list.append("Tomorrow's new episodes:")
-for epd in tomorrowsNewEps:
-    message_str_list.append(str(epd))
+    with open("toDoList.json", "w") as tivo_json_file:
+        tivo_json_file.write(
+            json.dumps(list_tivo, sort_keys=True, indent=4, separators=(",", ": "))
+        )
 
-message = '<br/>\n'.join(message_str_list)
+    new_eps = [EpisodeDetails(ep) for ep in list_tivo if ep["isNew"]]
 
-mimeMessage = MIMEText(message, 'html')
-mimeMessage['Subject'] = 'To do list for ' + str(datetime.now().date())
-mimeMessage['From'] = config['smtp_name']
-mimeMessage['To'] = ','.join(config['to_emails'])
+    todays_new_eps = [
+        ep
+        for ep in new_eps
+        if ep.requested_start_time.date() == datetime.today().date()
+    ]
+    tomorrows_new_eps = [
+        ep
+        for ep in new_eps
+        if ep.requested_start_time.date() == datetime.today().date() + timedelta(days=1)
+    ]
 
-print(mimeMessage.as_string())
+    todays_new_eps.sort(key=lambda ep: ep.requested_start_time)
+    tomorrows_new_eps.sort(key=lambda ep: ep.requested_start_time)
 
-smtpClient = smtplib.SMTP(config['smtp_server'])
-smtpClient.ehlo()
-smtpClient.starttls()
-smtpClient.login(config['smtp_user'], config['smtp_password'])
-smtpClient.sendmail(config['smtp_user'], config['smtp_user'], mimeMessage.as_string())
-smtpClient.close()
+    message_str_list = ["Today's new episodes:"]
+    for epd in todays_new_eps:
+        message_str_list.append(str(epd))
+
+    message_str_list.append("")
+    message_str_list.append("Tomorrow's new episodes:")
+    for epd in tomorrows_new_eps:
+        message_str_list.append(str(epd))
+
+    message = "<br/>\n".join(message_str_list)
+
+    mime_message = MIMEText(message, "html")
+    mime_message["Subject"] = "To do list for " + str(datetime.now().date())
+    mime_message["From"] = config["smtp_name"]
+    mime_message["To"] = ",".join(config["to_emails"])
+
+    print(mime_message.as_string())
+
+    if "-d" not in sys.argv:
+        smtp_client = smtplib.SMTP(config["smtp_server"])
+        smtp_client.ehlo()
+        smtp_client.starttls()
+        smtp_client.login(config["smtp_user"], config["smtp_password"])
+        smtp_client.sendmail(
+            config["smtp_user"], config["smtp_user"], mime_message.as_string()
+        )
+        smtp_client.close()
