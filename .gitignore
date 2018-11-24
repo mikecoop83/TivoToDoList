@@ -4,6 +4,7 @@ src/debug
 src/TivoToDoList
 src/toDoList.json
 **/*.conf
+**/*.pem
 .*/
 deploy.sh
 **/__pycache__/

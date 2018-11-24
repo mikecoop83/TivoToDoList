@@ -1,24 +1,23 @@
-#!/usr/bin/python
-import sys
+#!/usr/bin/python3
+import dateutil.parser
+import dateutil.tz
 import json
-import requests
 import smtplib
+import sys
+
 from email.mime.text import MIMEText
-import os
+from libtivomind import api
 
-from datetime import datetime
-from datetime import timedelta
-
-
-def get_local_time(str_utc_time):
-    if not str_utc_time:
-        return None
-    result = datetime.strptime(str_utc_time, "%Y-%m-%d %H:%M:%S") - offset
-    return result
+from datetime import date, datetime, timedelta
+from typing import List
 
 
-def sort_key(ep):
-    return get_local_time(ep.get("requested_start_time"))
+def get_local_time(str_utc_time: str) -> datetime:
+    return (
+        dateutil.parser.parse(str_utc_time)
+        .replace(tzinfo=dateutil.tz.UTC)
+        .astimezone(dateutil.tz.tzlocal())
+    )
 
 
 class EpisodeDetails:
@@ -28,73 +27,49 @@ class EpisodeDetails:
         self.description = ep.get("description")
         self.requested_start_time = get_local_time(ep.get("requestedStartTime"))
         self.requested_end_time = get_local_time(ep.get("requestedEndTime"))
-        self.url = "http://tvschedule.zap2it.com/tv/episode/" + ep.get(
-            "partnerCollectionId"
-        )
 
-    def __repr__(self):
+    def to_html(self) -> str:
         return "%s: <b>%s</b> (<i>%s</i>) [%s]" % (
-            self.requested_start_time.time(),
+            self.requested_start_time.time().strftime("%I:%M %p"),
             self.title,
             self.subtitle or self.description or "Unknown",
-            self.requested_end_time - self.requested_start_time,
+            str((self.requested_end_time - self.requested_start_time))[:-3],
         )
 
 
 if __name__ == "__main__":
-    offset = timedelta(
-        hours=round(float((datetime.utcnow() - datetime.now()).seconds) / 60 / 60, 0)
-    )
-
     with open("TivoToDoList.conf", "r") as configFile:
         config = json.loads(configFile.read())
 
-    str_tivo_json = ""
-    if os.path.isfile("toDoList.json"):
-        file_size = os.stat("toDoList.json").st_size
-        if file_size > 0:
-            mod_time_sec = os.path.getmtime("toDoList.json")
-            mod_time = datetime.fromtimestamp(mod_time_sec)
-            if "-f" in sys.argv or mod_time.date() == datetime.now().date():
-                with open("toDoList.json", "r") as tivo_json_file:
-                    str_tivo_json = tivo_json_file.read()
+    mind = api.Mind.new_local_session(
+        cert_path=config["cert_path"],
+        cert_password=config["cert_password"],
+        address=config["tivo_ip"],
+        mak=config["tivo_mak"],
+        port=config["tivo_port"],
+    )
 
-    if not str_tivo_json:
-        str_tivo_json = requests.get(
-            config["kmttgBaseUrl"] + "/getToDo?tivo=Roamio"
-        ).text
+    to_do_list = mind.recording_search(
+        fetch_all=True, filt={"state": ["inProgress", "scheduled"]}
+    )
 
-    list_tivo = json.loads(str_tivo_json)
+    new_eps = [EpisodeDetails(ep) for ep in to_do_list if ep["isNew"]]
 
-    with open("toDoList.json", "w") as tivo_json_file:
-        tivo_json_file.write(
-            json.dumps(list_tivo, sort_keys=True, indent=4, separators=(",", ": "))
-        )
+    def get_new_eps_by_date(start_date: date) -> List[EpisodeDetails]:
+        result = [ep for ep in new_eps if ep.requested_start_time.date() == start_date]
+        result.sort(key=lambda ep: ep.requested_start_time)
+        return result
 
-    new_eps = [EpisodeDetails(ep) for ep in list_tivo if ep["isNew"]]
+    todays_new_eps = get_new_eps_by_date(datetime.today().date())
+    tomorrows_new_eps = get_new_eps_by_date(datetime.today().date() + timedelta(days=1))
 
-    todays_new_eps = [
-        ep
-        for ep in new_eps
-        if ep.requested_start_time.date() == datetime.today().date()
+    message_str_list = ["Today's new episodes:"] + [
+        ep.to_html() for ep in todays_new_eps
     ]
-    tomorrows_new_eps = [
-        ep
-        for ep in new_eps
-        if ep.requested_start_time.date() == datetime.today().date() + timedelta(days=1)
+    message_str_list += [""]
+    message_str_list += ["Tomorrow's new episodes:"] + [
+        ep.to_html() for ep in tomorrows_new_eps
     ]
-
-    todays_new_eps.sort(key=lambda ep: ep.requested_start_time)
-    tomorrows_new_eps.sort(key=lambda ep: ep.requested_start_time)
-
-    message_str_list = ["Today's new episodes:"]
-    for epd in todays_new_eps:
-        message_str_list.append(str(epd))
-
-    message_str_list.append("")
-    message_str_list.append("Tomorrow's new episodes:")
-    for epd in tomorrows_new_eps:
-        message_str_list.append(str(epd))
 
     message = "<br/>\n".join(message_str_list)
 
