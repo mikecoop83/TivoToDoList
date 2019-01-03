@@ -1,18 +1,19 @@
-#!/usr/bin/python3
-import dateutil.parser
-import dateutil.tz
+#!/usr/bin/env python3
 import json
+import logging
+import os
 import smtplib
 import sys
-
+from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
+from typing import List, Dict
+
+import dateutil.parser
+import dateutil.tz
 from libtivomind import api
 
-from datetime import date, datetime, timedelta
-from typing import List
 
-
-def get_local_time(str_utc_time: str) -> datetime:
+def local_datetime_from_utc_string(str_utc_time: str) -> datetime:
     return (
         dateutil.parser.parse(str_utc_time)
         .replace(tzinfo=dateutil.tz.UTC)
@@ -21,26 +22,31 @@ def get_local_time(str_utc_time: str) -> datetime:
 
 
 class EpisodeDetails:
-    def __init__(self, ep):
+    def __init__(self, ep: Dict):
         self.title = ep.get("title")
         self.subtitle = ep.get("subtitle")
         self.description = ep.get("description")
-        self.requested_start_time = get_local_time(ep.get("requestedStartTime"))
-        self.requested_end_time = get_local_time(ep.get("requestedEndTime"))
+        self.requested_start_time = local_datetime_from_utc_string(
+            ep.get("requestedStartTime")
+        )
+        self.requested_end_time = local_datetime_from_utc_string(
+            ep.get("requestedEndTime")
+        )
 
     def to_html(self) -> str:
-        return "%s: <b>%s</b> (<i>%s</i>) [%s]" % (
-            self.requested_start_time.time().strftime("%I:%M %p"),
-            self.title,
-            self.subtitle or self.description or "Unknown",
-            str((self.requested_end_time - self.requested_start_time))[:-3],
-        )
+        subtitle = self.subtitle or self.description or "Unknown"
+        ep_length = str((self.requested_end_time - self.requested_start_time))[:-3]
+        return f"{self.requested_start_time:%I:%M %p}: <b>{self.title}</b> (<i>{subtitle}</i>) [{ep_length}]"
 
 
 if __name__ == "__main__":
-    with open("TivoToDoList.conf", "r") as configFile:
+    logging.basicConfig(format='%(asctime)s [%(levelname)s] %(message)s', level=logging.DEBUG)
+    config_filename = "TivoToDoList.conf"
+    logging.debug(f"Loading config file from {os.path.abspath(config_filename)}")
+    with open(config_filename, "r") as configFile:
         config = json.loads(configFile.read())
 
+    logging.info(f"Connecting to tivo at {config['tivo_ip']}:{config['tivo_port']} using cert at {os.path.abspath(config['cert_path'])}")
     mind = api.Mind.new_local_session(
         cert_path=config["cert_path"],
         cert_password=config["cert_password"],
@@ -49,10 +55,14 @@ if __name__ == "__main__":
         port=config["tivo_port"],
     )
 
+    logging.info(f"Querying tivo for to do list")
     to_do_list = mind.recording_search(
-        fetch_all=True, filt={"state": ["inProgress", "scheduled"]}
+        fetch_all=True, filt={
+            "state": ["inProgress", "scheduled"]
+        }
     )
 
+    logging.debug("Finding new episodes")
     new_eps = [EpisodeDetails(ep) for ep in to_do_list if ep["isNew"]]
 
     def get_new_eps_by_date(start_date: date) -> List[EpisodeDetails]:
@@ -60,27 +70,25 @@ if __name__ == "__main__":
         result.sort(key=lambda ep: ep.requested_start_time)
         return result
 
-    todays_new_eps = get_new_eps_by_date(datetime.today().date())
-    tomorrows_new_eps = get_new_eps_by_date(datetime.today().date() + timedelta(days=1))
+    today = datetime.today().date()
+    message_list = []
+    for date, label in [(today, "Today"), (today + timedelta(days=1), "Tomorrow")]:
+        message_list += [f"{label}'s new episodes:"] + [
+            ep.to_html() for ep in get_new_eps_by_date(date)
+        ]
+        message_list += [""]
 
-    message_str_list = ["Today's new episodes:"] + [
-        ep.to_html() for ep in todays_new_eps
-    ]
-    message_str_list += [""]
-    message_str_list += ["Tomorrow's new episodes:"] + [
-        ep.to_html() for ep in tomorrows_new_eps
-    ]
-
-    message = "<br/>\n".join(message_str_list)
+    message = "<br/>\n".join(message_list)
 
     mime_message = MIMEText(message, "html")
     mime_message["Subject"] = "To do list for " + str(datetime.now().date())
     mime_message["From"] = config["smtp_name"]
     mime_message["To"] = ",".join(config["to_emails"])
 
-    print(mime_message.as_string())
-
-    if "-d" not in sys.argv:
+    if "-d" in sys.argv:
+        logging.info(f"Not sending email: {mime_message}")
+    else:
+        logging.info(f"Sending email: {mime_message}")
         smtp_client = smtplib.SMTP(config["smtp_server"])
         smtp_client.ehlo()
         smtp_client.starttls()
@@ -89,3 +97,5 @@ if __name__ == "__main__":
             config["smtp_user"], config["smtp_user"], mime_message.as_string()
         )
         smtp_client.close()
+
+    logging.info("Done")
