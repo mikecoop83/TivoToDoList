@@ -7,8 +7,11 @@ name = "pypi"
 libtivomind = "*"
 python-dateutil = "*"
 black = "*"
+requests = "*"
+pytest = "*"
+beautifulsoup4 = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.7"
+python_version = "3.6"
