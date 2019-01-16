@@ -5,6 +5,8 @@ import os
 import requests
 import smtplib
 import sys
+import pytz
+from tzlocal import get_localzone
 from bs4 import BeautifulSoup
 from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
@@ -23,7 +25,15 @@ def local_datetime_from_utc_string(str_utc_time: str) -> datetime:
     )
 
 
-class EpisodeDetails:
+class EpisodeDetails(object):
+    __slots__ = [
+        "title",
+        "subtitle",
+        "description",
+        "requested_start_time",
+        "requested_end_time",
+    ]
+
     @classmethod
     def from_tivo_dict(cls, ep: Dict):
         ed = EpisodeDetails()
@@ -58,6 +68,75 @@ class EpisodeDetails:
         return f"{self.requested_start_time:%I:%M %p}: <b>{self.title}</b> (<i>{subtitle}</i>) [{ep_length}]"
 
 
+class ToDoListRetriever(object):
+    def __init__(self, config):
+        self.config = config
+
+    def _get_new_eps_by_date(
+        self, new_eps: List[EpisodeDetails], start_date: date
+    ) -> List[EpisodeDetails]:
+        result = [ep for ep in new_eps if ep.requested_start_time.date() == start_date]
+        result.sort(key=lambda ep: ep.requested_start_time)
+        return result
+
+    def get_new_episodes(self, dates: List[date]) -> Dict[date, List[EpisodeDetails]]:
+        logging.info(
+            f"Connecting to tivo at {self.config['tivo_ip']}:{self.config['tivo_port']} using cert at {os.path.abspath(self.config['cert_path'])}"
+        )
+
+        mind = api.Mind.new_local_session(
+            cert_path=self.config["cert_path"],
+            cert_password=self.config["cert_password"],
+            address=self.config["tivo_ip"],
+            mak=self.config["tivo_mak"],
+            port=self.config["tivo_port"],
+        )
+
+        local_tz = get_localzone()
+        logging.info(f"Querying tivo for to do list")
+        min_date_time = (
+            datetime.combine(min(dates), datetime.min.time())
+            .replace(tzinfo=local_tz)
+            .astimezone(pytz.utc)
+        )
+        max_date_time = (
+            datetime.combine(max(dates), datetime.max.time())
+            .replace(tzinfo=local_tz)
+            .astimezone(pytz.utc)
+        )
+        to_do_list = mind.recording_search(
+            fetch_all=True,
+            filt={
+                "state": ["scheduled"],
+                "minStartTime": min_date_time.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "maxStartTime": max_date_time.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            },
+        )
+
+        logging.debug("Finding new episodes")
+        new_eps = [
+            EpisodeDetails.from_tivo_dict(ep) for ep in to_do_list if ep["isNew"]
+        ]
+
+        tvmaze_show_ids = set(config.get("tvmaze_show_ids", []))
+        if tvmaze_show_ids:
+            logging.info(f"Querying tvmaze for schedule for {dates}")
+            for date in dates:
+                tvmaze_url = f"http://api.tvmaze.com/schedule?date={date}"
+                guide = requests.get(tvmaze_url).json()
+                new_eps += [
+                    EpisodeDetails.from_tvmaze_dict(ep)
+                    for ep in guide
+                    if ep.get("show", {}).get("id") in tvmaze_show_ids
+                ]
+
+        return {date: self._get_new_eps_by_date(new_eps, date) for date in dates}
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(message)s", level=logging.DEBUG
@@ -67,53 +146,16 @@ if __name__ == "__main__":
     with open(config_filename, "r") as configFile:
         config = json.loads(configFile.read())
 
-    logging.info(
-        f"Connecting to tivo at {config['tivo_ip']}:{config['tivo_port']} using cert at {os.path.abspath(config['cert_path'])}"
-    )
-    mind = api.Mind.new_local_session(
-        cert_path=config["cert_path"],
-        cert_password=config["cert_password"],
-        address=config["tivo_ip"],
-        mak=config["tivo_mak"],
-        port=config["tivo_port"],
-    )
-
-    logging.info(f"Querying tivo for to do list")
-    to_do_list = mind.recording_search(
-        fetch_all=True, filt={"state": ["inProgress", "scheduled"]}
-    )
-
     today = datetime.today().date()
     dates_and_labels = [(today, "Today"), (today + timedelta(days=1), "Tomorrow")]
 
-    logging.debug("Finding new episodes")
-    new_eps = [EpisodeDetails.from_tivo_dict(ep) for ep in to_do_list if ep["isNew"]]
-
-    tvmaze_eps = []
-    try:
-        tvmaze_show_ids = set(config.get("tvmaze_show_ids", []))
-        if tvmaze_show_ids:
-            logging.info(f"Querying tvmaze for schedule for {dates_and_labels}")
-            for date, _ in dates_and_labels:
-                tvmaze_url = f"http://api.tvmaze.com/schedule?date={date}"
-                guide = requests.get(tvmaze_url).json()
-                new_eps += [
-                    EpisodeDetails.from_tvmaze_dict(ep)
-                    for ep in guide
-                    if ep.get("show", {}).get("id") in tvmaze_show_ids
-                ]
-    except Exception:
-        logging.exception("Error querying tvmaze for schedule")
-
-    def get_new_eps_by_date(start_date: date) -> List[EpisodeDetails]:
-        result = [ep for ep in new_eps if ep.requested_start_time.date() == start_date]
-        result.sort(key=lambda ep: ep.requested_start_time)
-        return result
+    retriever = ToDoListRetriever(config)
+    new_eps_by_date = retriever.get_new_episodes([dl[0] for dl in dates_and_labels])
 
     message_list = []
     for date, label in dates_and_labels:
         message_list += [f"{label}'s new episodes:"] + [
-            ep.to_html() for ep in get_new_eps_by_date(date)
+            ep.to_html() for ep in new_eps_by_date.get(date, [])
         ]
         message_list += [""]
 
