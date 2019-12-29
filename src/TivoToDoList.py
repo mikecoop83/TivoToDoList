@@ -72,18 +72,15 @@ class ToDoListRetriever(object):
     def __init__(self, config):
         self.config = config
 
+    @staticmethod
     def _get_new_eps_by_date(
-        self, new_eps: List[EpisodeDetails], start_date: date
+        new_eps: List[EpisodeDetails], start_date: date
     ) -> List[EpisodeDetails]:
         result = [ep for ep in new_eps if ep.requested_start_time.date() == start_date]
         result.sort(key=lambda ep: ep.requested_start_time)
         return result
 
-    def get_new_episodes(self, dates: List[date]) -> Dict[date, List[EpisodeDetails]]:
-        logging.info(
-            f"Connecting to tivo at {self.config['tivo_ip']}:{self.config['tivo_port']} using cert at {os.path.abspath(self.config['cert_path'])}"
-        )
-
+    def get_to_do_list_from_tivo(self, dates: List[date]) -> Dict:
         mind = api.Mind.new_local_session(
             cert_path=self.config["cert_path"],
             cert_password=self.config["cert_password"],
@@ -108,21 +105,25 @@ class ToDoListRetriever(object):
             fetch_all=True,
             filt={
                 "state": ["scheduled"],
-                "minStartTime": min_date_time.strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "maxStartTime": max_date_time.strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                "minStartTime": min_date_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "maxStartTime": max_date_time.strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
+        return to_do_list
+
+    def get_new_episodes(self, dates: List[date]) -> Dict[date, List[EpisodeDetails]]:
+        logging.info(
+            f"Connecting to tivo at {self.config['tivo_ip']}:{self.config['tivo_port']} using cert at {os.path.abspath(self.config['cert_path'])}"
+        )
+
+        to_do_list = self.get_to_do_list_from_tivo(dates)
 
         logging.debug("Finding new episodes")
         new_eps = [
             EpisodeDetails.from_tivo_dict(ep) for ep in to_do_list if ep["isNew"]
         ]
 
-        tvmaze_show_ids = set(config.get("tvmaze_show_ids", []))
+        tvmaze_show_ids = set(self.config.get("tvmaze_show_ids", []))
         if tvmaze_show_ids:
             logging.info(f"Querying tvmaze for schedule for {dates}")
             for date in dates:
@@ -134,7 +135,10 @@ class ToDoListRetriever(object):
                     if ep.get("show", {}).get("id") in tvmaze_show_ids
                 ]
 
-        return {date: self._get_new_eps_by_date(new_eps, date) for date in dates}
+        return {
+            date: ToDoListRetriever._get_new_eps_by_date(new_eps, date)
+            for date in dates
+        }
 
 
 if __name__ == "__main__":
@@ -154,9 +158,10 @@ if __name__ == "__main__":
 
     message_list = []
     for date, label in dates_and_labels:
-        message_list += [f"{label}'s new episodes:"] + [
-            ep.to_html() for ep in new_eps_by_date.get(date, [])
-        ]
+        episode_details = [ep.to_html() for ep in new_eps_by_date.get(date, [])]
+        message_list += [f"{label}'s new episodes:"] + (
+            episode_details or [f"<i>No recording scheduled.</i>"]
+        )
         message_list += [""]
 
     message = "<br/>\n".join(message_list)
