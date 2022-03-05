@@ -22,11 +22,11 @@ import (
 )
 
 type episodeDetails struct {
-	Title              string
-	Subtitle           string
-	Description        string
-	RequestedStartTime time.Time
-	RequestedEndTime   time.Time
+	Title       string
+	Subtitle    string
+	Description string
+	StartTime   time.Time
+	EndTime     time.Time
 }
 
 func getDate(dateTime time.Time) time.Time {
@@ -56,11 +56,11 @@ func episodeFromTivoMap(ep json.Map) episodeDetails {
 	requestedStartTime := ep.String("requestedStartTime")
 	requestedEndTime := ep.String("requestedEndTime")
 	return episodeDetails{
-		Title:              title,
-		Subtitle:           subtitle,
-		Description:        description,
-		RequestedStartTime: parseUtcAsLocalTime(requestedStartTime),
-		RequestedEndTime:   parseUtcAsLocalTime(requestedEndTime),
+		Title:       title,
+		Subtitle:    subtitle,
+		Description: description,
+		StartTime:   parseUtcAsLocalTime(requestedStartTime),
+		EndTime:     parseUtcAsLocalTime(requestedEndTime),
 	}
 }
 
@@ -78,7 +78,7 @@ func coalesce(objs ...interface{}) interface{} {
 
 func (ep episodeDetails) String() string {
 	return fmt.Sprintf("%s: <b>%s</b> (<i>%s</i>) [%s]",
-		ep.RequestedStartTime.Format("03:04 PM"), ep.Title, coalesce(ep.Subtitle, ep.Description, "Unknown"), strings.TrimRight(ep.RequestedEndTime.Sub(ep.RequestedStartTime).String(), "0s"))
+		ep.StartTime.Format("03:04 PM"), ep.Title, coalesce(ep.Subtitle, ep.Description, "Unknown"), strings.TrimRight(ep.EndTime.Sub(ep.StartTime).String(), "0s"))
 }
 
 func episodeFromTVMazeMap(ep json.Map) episodeDetails {
@@ -86,9 +86,20 @@ func episodeFromTVMazeMap(ep json.Map) episodeDetails {
 	show := ep.Map("show")
 	ed.Title = show.String("name")
 	ed.Subtitle = ep.String("name")
-	ed.RequestedStartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.String("airstamp"))
-	ed.RequestedStartTime.UTC().In(time.Local)
-	ed.RequestedEndTime = ed.RequestedStartTime.Add(time.Duration(ep.Int("runtime")) * time.Minute)
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.String("airstamp"))
+	ed.StartTime.UTC().In(time.Local)
+	ed.EndTime = ed.StartTime.Add(time.Duration(ep.Int("runtime")) * time.Minute)
+	return ed
+}
+
+func episodeFromTVMazeWebMap(ep json.Map) episodeDetails {
+	ed := episodeDetails{}
+	show := ep.Map("_embedded").Map("show")
+	ed.Title = show.String("name")
+	ed.Subtitle = ep.String("name")
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.String("airstamp"))
+	ed.StartTime.UTC().In(time.Local)
+	ed.EndTime = ed.StartTime.Add(time.Duration(ep.Int("runtime")) * time.Minute)
 	return ed
 }
 
@@ -100,22 +111,39 @@ func getTVMazeShows(dates []time.Time, showIDs []int) ([]episodeDetails, error) 
 	}
 	for _, date := range dates {
 		dateFmt := date.Format("2006-01-02")
-		url := fmt.Sprintf("https://api.tvmaze.com/schedule?date=%s", dateFmt)
-		response, err := http.DefaultClient.Get(url)
-		if err != nil {
-			return nil, err
+		urls := []string{
+			fmt.Sprintf("https://api.tvmaze.com/schedule?date=%s", dateFmt),
+			fmt.Sprintf("https://api.tvmaze.com/schedule/web?date=%s", dateFmt),
 		}
-		defer response.Body.Close()
-		tvMazeGuide, err := json.FromReader[json.Array](response.Body)
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < len(tvMazeGuide); i++ {
-			ep := tvMazeGuide.Map(i)
-			showID := ep.Map("show").Int("id")
-			if _, ok := showMap[showID]; ok {
-				ed := episodeFromTVMazeMap(ep)
-				results = append(results, ed)
+		for _, url := range urls {
+			response, err := http.DefaultClient.Get(url)
+			if err != nil {
+				return nil, err
+			}
+			defer response.Body.Close()
+			tvMazeGuide, err := json.FromReader[json.Array](response.Body)
+			if err != nil {
+				return nil, err
+			}
+			for i := 0; i < len(tvMazeGuide); i++ {
+				var web bool
+				var showID int
+				ep := tvMazeGuide.Map(i)
+				if ep.Has("_embedded") {
+					showID = ep.Map("_embedded").Map("show").Int("id")
+					web = true
+				} else {
+					showID = ep.Map("_embedded").Int("id")
+				}
+				if _, ok := showMap[showID]; ok {
+					var ed episodeDetails
+					if web {
+						ed = episodeFromTVMazeWebMap(ep)
+					} else {
+						ed = episodeFromTVMazeMap(ep)
+					}
+					results = append(results, ed)
+				}
 			}
 		}
 	}
@@ -163,12 +191,21 @@ var configBytes []byte
 func run() error {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	today := getDate(time.Now())
-	tomorrow := today.AddDate(0, 0, 1)
-
 	nomail := flag.Bool("nomail", false, "do everything except sending the mail")
-
+	runDate := flag.String("date", "", "run for this date")
 	flag.Parse()
+
+	var today time.Time
+	var err error
+	if *runDate != "" {
+		today, err = time.Parse("2006-01-02", *runDate)
+		if err != nil {
+			return err
+		}
+	} else {
+		today = getDate(time.Now())
+	}
+	tomorrow := today.AddDate(0, 0, 1)
 
 	config, err := json.FromBytes[json.Map](configBytes)
 	if err != nil {
@@ -212,7 +249,7 @@ func run() error {
 
 	var todaysNewEps, tomorrowsNewEps []episodeDetails
 	for _, ep := range episodes {
-		epDate := getDate(ep.RequestedStartTime)
+		epDate := getDate(ep.StartTime)
 		if epDate == today {
 			todaysNewEps = append(todaysNewEps, ep)
 		} else if epDate == tomorrow {
@@ -221,10 +258,10 @@ func run() error {
 	}
 
 	sort.Slice(todaysNewEps, func(i, j int) bool {
-		return todaysNewEps[i].RequestedStartTime.Unix() < todaysNewEps[j].RequestedStartTime.Unix()
+		return todaysNewEps[i].StartTime.Unix() < todaysNewEps[j].StartTime.Unix()
 	})
 	sort.Slice(tomorrowsNewEps, func(i, j int) bool {
-		return tomorrowsNewEps[i].RequestedStartTime.Unix() < tomorrowsNewEps[j].RequestedStartTime.Unix()
+		return tomorrowsNewEps[i].StartTime.Unix() < tomorrowsNewEps[j].StartTime.Unix()
 	})
 
 	var messageList []string
@@ -241,8 +278,9 @@ func run() error {
 	}
 
 	messageBody := strings.Join(messageList, "<br/>")
+	messageBodyLog := strings.Join(messageList, "\n")
 
-	fmt.Println(messageBody)
+	fmt.Println(messageBodyLog)
 
 	m := &gophermail.Message{}
 	err = m.SetFrom(config.String("smtp_name") + " <" + config.String("smtp_user") + ">")
