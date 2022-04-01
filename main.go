@@ -29,7 +29,7 @@ type episodeDetails struct {
 	EndTime     time.Time
 }
 
-func getDate(dateTime time.Time) time.Time {
+func atMidnight(dateTime time.Time) time.Time {
 	return time.Date(
 		dateTime.Year(),
 		dateTime.Month(),
@@ -38,7 +38,7 @@ func getDate(dateTime time.Time) time.Time {
 		dateTime.Location())
 }
 
-func parseUtcAsLocalTime(utcTime string) time.Time {
+func parseTivoTime(utcTime string) time.Time {
 	if utcTime == "" {
 		return time.Time{}
 	}
@@ -50,56 +50,58 @@ func parseUtcAsLocalTime(utcTime string) time.Time {
 }
 
 func episodeFromTivoMap(ep json.Map) episodeDetails {
-	title := ep.String("title")
-	subtitle := ep.String("subtitle")
-	description := ep.String("description")
-	requestedStartTime := ep.String("requestedStartTime")
-	requestedEndTime := ep.String("requestedEndTime")
+	title := ep.MustString("title")
+	subtitle := ep.MustString("subtitle")
+	description, _ := ep.String("description")
+	requestedStartTime := ep.MustString("requestedStartTime")
+	requestedEndTime := ep.MustString("requestedEndTime")
 	return episodeDetails{
 		Title:       title,
 		Subtitle:    subtitle,
 		Description: description,
-		StartTime:   parseUtcAsLocalTime(requestedStartTime),
-		EndTime:     parseUtcAsLocalTime(requestedEndTime),
+		StartTime:   parseTivoTime(requestedStartTime),
+		EndTime:     parseTivoTime(requestedEndTime),
 	}
 }
 
-func coalesce(objs ...interface{}) interface{} {
-	if objs == nil {
-		return nil
-	}
-	for _, obj := range objs {
-		if obj != nil {
-			return obj
+func firstNonEmpty(strs ...string) string {
+	for _, s := range strs {
+		if s != "" {
+			return s
 		}
 	}
-	return nil
+	return ""
 }
 
-func (ep episodeDetails) String() string {
-	return fmt.Sprintf("%s: <b>%s</b> (<i>%s</i>) [%s]",
-		ep.StartTime.Format("03:04 PM"), ep.Title, coalesce(ep.Subtitle, ep.Description, "Unknown"), strings.TrimRight(ep.EndTime.Sub(ep.StartTime).String(), "0s"))
+func (ep episodeDetails) toHtml() string {
+	return fmt.Sprintf(
+		"%s: <b>%s</b> (<i>%s</i>) [%s]",
+		ep.StartTime.Format("03:04 PM"),
+		ep.Title,
+		firstNonEmpty(ep.Subtitle, ep.Description, "Unknown"),
+		strings.TrimRight(ep.EndTime.Sub(ep.StartTime).String(), "0s"),
+	)
 }
 
 func episodeFromTVMazeMap(ep json.Map) episodeDetails {
 	ed := episodeDetails{}
 	show := ep.Map("show")
-	ed.Title = show.String("name")
-	ed.Subtitle = ep.String("name")
-	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.String("airstamp"))
-	ed.StartTime.UTC().In(time.Local)
-	ed.EndTime = ed.StartTime.Add(time.Duration(ep.Int("runtime")) * time.Minute)
+	ed.Title = show.MustString("name")
+	ed.Subtitle = ep.MustString("name")
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.MustString("airstamp"))
+	ed.StartTime = ed.StartTime.UTC().In(time.Local)
+	ed.EndTime = ed.StartTime.Add(time.Duration(int(ep.MustFloat("runtime"))) * time.Minute)
 	return ed
 }
 
 func episodeFromTVMazeWebMap(ep json.Map) episodeDetails {
 	ed := episodeDetails{}
 	show := ep.Map("_embedded").Map("show")
-	ed.Title = show.String("name")
-	ed.Subtitle = ep.String("name")
-	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.String("airstamp"))
-	ed.StartTime.UTC().In(time.Local)
-	ed.EndTime = ed.StartTime.Add(time.Duration(ep.Int("runtime")) * time.Minute)
+	ed.Title = show.MustString("name")
+	ed.Subtitle = ep.MustString("name")
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.MustString("airstamp"))
+	ed.StartTime = ed.StartTime.UTC().In(time.Local)
+	ed.EndTime = ed.StartTime.Add(time.Duration(int(ep.MustFloat("runtime"))) * time.Minute)
 	return ed
 }
 
@@ -120,20 +122,20 @@ func getTVMazeShows(dates []time.Time, showIDs []int) ([]episodeDetails, error) 
 			if err != nil {
 				return nil, err
 			}
-			defer response.Body.Close()
-			tvMazeGuide, err := json.FromReader[json.Array](response.Body)
+			tvMazeGuide := json.ArrayFromReader(response.Body)
+			_ = response.Body.Close()
 			if err != nil {
 				return nil, err
 			}
-			for i := 0; i < len(tvMazeGuide); i++ {
+			for i := 0; i < tvMazeGuide.MustLen(); i++ {
 				var web bool
 				var showID int
 				ep := tvMazeGuide.Map(i)
-				if ep.Has("_embedded") {
-					showID = ep.Map("_embedded").Map("show").Int("id")
+				if ep.MustHas("_embedded") {
+					showID = int(ep.Map("_embedded").Map("show").MustFloat("id"))
 					web = true
 				} else {
-					showID = ep.Map("_embedded").Int("id")
+					showID = int(ep.Map("show").MustFloat("id"))
 				}
 				if _, ok := showMap[showID]; ok {
 					var ed episodeDetails
@@ -168,10 +170,10 @@ func getTivoEpisodes(minDate, maxDate time.Time, host string, port int, mak stri
 	if err != nil {
 		return nil, err
 	}
-	tivoArray := json.Array(tivoList)
+	tivoArray := json.NewArray(tivoList)
 	for i := 0; i < len(tivoList); i++ {
 		tivoMap := tivoArray.Map(i)
-		if tivoMap.Bool("isNew") {
+		if tivoMap.MustBool("isNew") {
 			ed := episodeFromTivoMap(tivoMap)
 			results = append(results, ed)
 		}
@@ -203,17 +205,14 @@ func run() error {
 			return err
 		}
 	} else {
-		today = getDate(time.Now())
+		today = atMidnight(time.Now())
 	}
 	tomorrow := today.AddDate(0, 0, 1)
 
-	config, err := json.FromBytes[json.Map](configBytes)
-	if err != nil {
-		return err
-	}
-	host := config.String("tivo_ip")
-	port := config.Int("tivo_port")
-	mak := config.String("tivo_mak")
+	config := json.MapFromBytes(configBytes)
+	host := config.MustString("tivo_ip")
+	port := int(config.MustFloat("tivo_port"))
+	mak := config.MustString("tivo_mak")
 
 	tivoEps, err := getTivoEpisodes(today, tomorrow, host, port, mak)
 	if err != nil {
@@ -222,11 +221,11 @@ func run() error {
 
 	dates := []time.Time{today, tomorrow}
 
-	srv, err := sheets.NewService(context.Background(), option.WithAPIKey(config.String("google_api_key")))
+	srv, err := sheets.NewService(context.Background(), option.WithAPIKey(config.MustString("google_api_key")))
 	if err != nil {
 		return err
 	}
-	spreadsheetId := config.String("google_tvmaze_sheet_id")
+	spreadsheetId, _ := config.String("google_tvmaze_sheet_id")
 	readRange := "A:A"
 	resp, err := srv.Spreadsheets.Values.Get(spreadsheetId, readRange).Do()
 	if err != nil {
@@ -249,7 +248,7 @@ func run() error {
 
 	var todaysNewEps, tomorrowsNewEps []episodeDetails
 	for _, ep := range episodes {
-		epDate := getDate(ep.StartTime)
+		epDate := atMidnight(ep.StartTime)
 		if epDate == today {
 			todaysNewEps = append(todaysNewEps, ep)
 		} else if epDate == tomorrow {
@@ -264,37 +263,23 @@ func run() error {
 		return tomorrowsNewEps[i].StartTime.Unix() < tomorrowsNewEps[j].StartTime.Unix()
 	})
 
-	var messageList []string
-	messageList = append(messageList, "Today's new episodes:")
-	for _, ep := range todaysNewEps {
-		messageList = append(messageList, ep.String())
-	}
-
-	messageList = append(messageList, "")
-
-	messageList = append(messageList, "Tomorrow's new episodes")
-	for _, ep := range tomorrowsNewEps {
-		messageList = append(messageList, ep.String())
-	}
-
-	messageBody := strings.Join(messageList, "<br/>")
-	messageBodyLog := strings.Join(messageList, "\n")
-
-	fmt.Println(messageBodyLog)
+	messageBody := generateMessageBody(todaysNewEps, tomorrowsNewEps)
+	fmt.Println(messageBody)
 
 	m := &gophermail.Message{}
-	err = m.SetFrom(config.String("smtp_name") + " <" + config.String("smtp_user") + ">")
+	err = m.SetFrom(config.MustString("smtp_name") + " <" + config.MustString("smtp_user") + ">")
 	if err != nil {
 		return err
 	}
 	toEmails := config.Array("to_emails")
 	var recipients []string
-	for _, toEmail := range toEmails {
-		err := m.AddTo(toEmail.(string))
+	for i := 0; i < toEmails.MustLen(); i++ {
+		toEmail := toEmails.MustString(i)
+		err := m.AddTo(toEmail)
 		if err != nil {
 			return err
 		}
-		recipients = append(recipients, toEmail.(string))
+		recipients = append(recipients, toEmail)
 	}
 
 	m.Subject = "To do list for " + time.Now().Format("2006-01-02")
@@ -310,11 +295,25 @@ func run() error {
 	fmt.Printf("%s", msgBytes)
 
 	if !(*nomail) {
-		auth := smtp.PlainAuth("", config.String("smtp_user"), config.String("smtp_password"), config.String("smtp_host"))
-		err = smtp.SendMail(config.String("smtp_server"), auth, config.String("smtp_name"), recipients, msgBytes)
+		auth := smtp.PlainAuth("", config.MustString("smtp_user"), config.MustString("smtp_password"), config.MustString("smtp_host"))
+		err = smtp.SendMail(config.MustString("smtp_server"), auth, config.MustString("smtp_name"), recipients, msgBytes)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func generateMessageBody(todaysNewEps, tomorrowsNewEps []episodeDetails) string {
+	var messageList []string
+	messageList = append(messageList, "Today's new episodes:")
+	for _, ep := range todaysNewEps {
+		messageList = append(messageList, ep.toHtml())
+	}
+	messageList = append(messageList, "", "Tomorrow's new episodes")
+	for _, ep := range tomorrowsNewEps {
+		messageList = append(messageList, ep.toHtml())
+	}
+	messageBody := strings.Join(messageList, "<br/>")
+	return messageBody
 }
