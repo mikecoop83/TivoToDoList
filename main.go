@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikecoop83/json"
+	"github.com/mikecoop83/luna"
+
 	"github.com/mikecoop83/tivo"
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
@@ -49,12 +50,19 @@ func parseTivoTime(utcTime string) time.Time {
 	return result.In(time.Now().Location())
 }
 
-func episodeFromTivoMap(ep json.Map) episodeDetails {
-	title := ep.MustString("title")
-	subtitle := ep.MustString("subtitle")
+func must[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func episodeFromTivoMap(ep luna.Map) episodeDetails {
+	title := must(ep.String("title"))
+	subtitle := must(ep.String("subtitle"))
 	description, _ := ep.String("description")
-	requestedStartTime := ep.MustString("requestedStartTime")
-	requestedEndTime := ep.MustString("requestedEndTime")
+	requestedStartTime := must(ep.String("requestedStartTime"))
+	requestedEndTime := must(ep.String("requestedEndTime"))
 	return episodeDetails{
 		Title:       title,
 		Subtitle:    subtitle,
@@ -83,25 +91,25 @@ func (ep episodeDetails) toHtml() string {
 	)
 }
 
-func episodeFromTVMazeMap(ep json.Map) episodeDetails {
+func episodeFromTVMazeMap(ep luna.Map) episodeDetails {
 	ed := episodeDetails{}
 	show := ep.Map("show")
-	ed.Title = show.MustString("name")
-	ed.Subtitle = ep.MustString("name")
-	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.MustString("airstamp"))
+	ed.Title = must(show.String("name"))
+	ed.Subtitle = must(ep.String("name"))
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", must(ep.String("airstamp")))
 	ed.StartTime = ed.StartTime.UTC().In(time.Local)
-	ed.EndTime = ed.StartTime.Add(time.Duration(int(ep.MustFloat("runtime"))) * time.Minute)
+	ed.EndTime = ed.StartTime.Add(time.Duration(int(must(ep.Float("runtime")))) * time.Minute)
 	return ed
 }
 
-func episodeFromTVMazeWebMap(ep json.Map) episodeDetails {
+func episodeFromTVMazeWebMap(ep luna.Map) episodeDetails {
 	ed := episodeDetails{}
 	show := ep.Map("_embedded").Map("show")
-	ed.Title = show.MustString("name")
-	ed.Subtitle = ep.MustString("name")
-	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", ep.MustString("airstamp"))
+	ed.Title = must(show.String("name"))
+	ed.Subtitle = must(ep.String("name"))
+	ed.StartTime, _ = time.Parse("2006-01-02T15:04:05+00:00", must(ep.String("airstamp")))
 	ed.StartTime = ed.StartTime.UTC().In(time.Local)
-	ed.EndTime = ed.StartTime.Add(time.Duration(int(ep.MustFloat("runtime"))) * time.Minute)
+	ed.EndTime = ed.StartTime.Add(time.Duration(int(must(ep.Float("runtime")))) * time.Minute)
 	return ed
 }
 
@@ -122,20 +130,20 @@ func getTVMazeShows(dates []time.Time, showIDs []int) ([]episodeDetails, error) 
 			if err != nil {
 				return nil, err
 			}
-			tvMazeGuide := json.ArrayFromReader(response.Body)
+			tvMazeGuide := luna.ArrayFromReader(response.Body)
 			_ = response.Body.Close()
 			if err != nil {
 				return nil, err
 			}
-			for i := 0; i < tvMazeGuide.MustLen(); i++ {
+			for i := 0; i < must(tvMazeGuide.Len()); i++ {
 				var web bool
 				var showID int
 				ep := tvMazeGuide.Map(i)
-				if ep.MustHas("_embedded") {
-					showID = int(ep.Map("_embedded").Map("show").MustFloat("id"))
+				if must(ep.Has("_embedded")) {
+					showID = int(must(ep.Map("_embedded").Map("show").Float("id")))
 					web = true
 				} else {
-					showID = int(ep.Map("show").MustFloat("id"))
+					showID = int(must(ep.Map("show").Float("id")))
 				}
 				if _, ok := showMap[showID]; ok {
 					var ed episodeDetails
@@ -170,10 +178,10 @@ func getTivoEpisodes(minDate, maxDate time.Time, host string, port int, mak stri
 	if err != nil {
 		return nil, err
 	}
-	tivoArray := json.NewArray(tivoList)
+	tivoArray := luna.NewArray(tivoList)
 	for i := 0; i < len(tivoList); i++ {
 		tivoMap := tivoArray.Map(i)
-		if tivoMap.MustBool("isNew") {
+		if must(tivoMap.Bool("isNew")) {
 			ed := episodeFromTivoMap(tivoMap)
 			results = append(results, ed)
 		}
@@ -209,10 +217,10 @@ func run() error {
 	}
 	tomorrow := today.AddDate(0, 0, 1)
 
-	config := json.MapFromBytes(configBytes)
-	host := config.MustString("tivo_ip")
-	port := int(config.MustFloat("tivo_port"))
-	mak := config.MustString("tivo_mak")
+	config := luna.MapFromBytes(configBytes)
+	host := must(config.String("tivo_ip"))
+	port := int(must(config.Float("tivo_port")))
+	mak := must(config.String("tivo_mak"))
 
 	tivoEps, err := getTivoEpisodes(today, tomorrow, host, port, mak)
 	if err != nil {
@@ -221,7 +229,7 @@ func run() error {
 
 	dates := []time.Time{today, tomorrow}
 
-	srv, err := sheets.NewService(context.Background(), option.WithAPIKey(config.MustString("google_api_key")))
+	srv, err := sheets.NewService(context.Background(), option.WithAPIKey(must(config.String("google_api_key"))))
 	if err != nil {
 		return err
 	}
@@ -267,14 +275,14 @@ func run() error {
 	fmt.Println(messageBody)
 
 	m := &gophermail.Message{}
-	err = m.SetFrom(config.MustString("smtp_name") + " <" + config.MustString("smtp_user") + ">")
+	err = m.SetFrom(must(config.String("smtp_name")) + " <" + must(config.String("smtp_user")) + ">")
 	if err != nil {
 		return err
 	}
 	toEmails := config.Array("to_emails")
 	var recipients []string
-	for i := 0; i < toEmails.MustLen(); i++ {
-		toEmail := toEmails.MustString(i)
+	for i := 0; i < must(toEmails.Len()); i++ {
+		toEmail := must(toEmails.String(i))
 		err := m.AddTo(toEmail)
 		if err != nil {
 			return err
@@ -295,8 +303,8 @@ func run() error {
 	fmt.Printf("%s", msgBytes)
 
 	if !(*nomail) {
-		auth := smtp.PlainAuth("", config.MustString("smtp_user"), config.MustString("smtp_password"), config.MustString("smtp_host"))
-		err = smtp.SendMail(config.MustString("smtp_server"), auth, config.MustString("smtp_name"), recipients, msgBytes)
+		auth := smtp.PlainAuth("", must(config.String("smtp_user")), must(config.String("smtp_password")), must(config.String("smtp_host")))
+		err = smtp.SendMail(must(config.String("smtp_server")), auth, must(config.String("smtp_name")), recipients, msgBytes)
 		if err != nil {
 			return err
 		}
