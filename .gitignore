@@ -1,9 +1,4 @@
 bin/
-data/
-src/debug
-src/TivoToDoList
-src/toDoList.json
 **/*.conf
 **/*.pem
 .*/
-**/__pycache__/
